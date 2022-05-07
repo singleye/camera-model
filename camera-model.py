@@ -116,6 +116,15 @@ class Camera(object):
                                    [0,                  0,                  1]])
 
     @property
+    def roll(self):
+        return self._roll
+
+    @roll.setter
+    def roll(self, value):
+        self._roll = value
+        self.rotate(self._roll, self._pitch, self._yaw)
+
+    @property
     def pitch(self):
         return self._pitch
 
@@ -163,7 +172,8 @@ class Camera(object):
         '''
         rx, _ = cv2.Rodrigues((pitch, 0, 0))
         ry, _ = cv2.Rodrigues((0, yaw, 0))
-        self.R = np.dot(ry, rx)
+        rz, _ = cv2.Rodrigues((0, 0, roll))
+        self.R = np.dot(rz, np.dot(ry, rx))
 
     def trans_to_cam(self, v):
         '''
@@ -282,6 +292,12 @@ class Camera(object):
             # DOWN
             elif key == 0x54 or key == 0x01:
                 self.pitch += np.pi/180
+            # ',/<'
+            elif key == 0x2c:
+                self.roll += np.pi/180
+            # './>'
+            elif key == 0x2e:
+                self.roll -= np.pi/180
             # '-'
             elif key == ord('-'):
                 new_f = self.focus - 0.1
