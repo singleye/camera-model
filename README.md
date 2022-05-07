@@ -6,4 +6,4 @@ Features:
 * Move camera in 6-DOF space
 * Change camera focus length
 
-!
+![example](https://github.com/singleye/camera-model/blob/master/examples/camera-model-1.png)
