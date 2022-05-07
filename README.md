@@ -1,5 +1,7 @@
 This is a simple implementation of computer vision camera model.
 
+I write a [blog](http://www.singleye.net/2022/05/摄像机模型及实现/) detailing the math behind, please take a look
+
 ## Features:
 
 * Add vertices(point)/lines in 3D world frame

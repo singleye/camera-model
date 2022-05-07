@@ -180,7 +180,8 @@ class Camera(object):
         Transform the world coordinate vertices to camera coordinate vertices
             v: vertices in world coordinate frame
         '''
-        vc = np.dot(self.R, v.T) - np.array([[self._x], [self._y], [self._z]])
+        #vc = np.dot(self.R, v.T) - np.array([[self._x], [self._y], [self._z]])
+        vc = np.dot(self.R, (v.T - np.array([[self._x], [self._y], [self._z]])))
         return vc.T
 
     def project(self, v):
