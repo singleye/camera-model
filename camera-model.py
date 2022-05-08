@@ -47,15 +47,16 @@ class Vertices(Object3D):
     3D space vertices
     '''
 
-    def __init__(self, v, color=(0xFF, 0xFF, 0xFF)):
+    def __init__(self, v, color=(0xFF, 0xFF, 0xFF), texture=None):
         super().__init__()
         self._verts = v
         self._color = color
+        self._texture = texture
 
     def refresh(self, camera):
         v_c = camera.trans_to_cam(self._verts)
         proj_v = camera.project(v_c)
-        camera.render(proj_v, self._color)
+        camera.render(proj_v, self._color, texture=self._texture)
 
 
 class Line(Object3D):
@@ -74,6 +75,9 @@ class Line(Object3D):
         start_p = camera.project(start_c)
         end_c = camera.trans_to_cam(np.array([self._end]))
         end_p = camera.project(end_c)
+        if np.isnan(start_p[0]).any() or np.isinf(start_p[0]).any() or \
+                np.isnan(end_p[0]).any() or np.isinf(end_p[0]).any():
+            return
         camera.draw_line_2d(tuple(start_p[0].astype(int)),
                             tuple(end_p[0].astype(int)),
                             self._color, self._thickness)
@@ -210,8 +214,10 @@ class Camera(object):
                 v = height - f*(Z/X)
         '''
         Z = np.expand_dims(v[:, -1], axis=1)
-        proj_v = np.transpose(np.dot(self.intrinsic, v.T)) / Z
+        with np.errstate(divide='ignore', invalid='ignore'):
+            proj_v = np.transpose(np.dot(self.intrinsic, v.T)) / Z
         proj_v[:, 0:2] = [self._canvas_width, self._canvas_height] - proj_v[:, 0:2]
+        #proj_v[v[:, 2]< 0.03] = np.nan
         return proj_v[:, :2]
 
     def draw_point_2d(self, x, y, color=(0xFF, 0xFF, 0xFF), thickness=1):
@@ -219,8 +225,6 @@ class Camera(object):
         Draw a point on the canvas
         '''
         with self._canvas_lock:
-            #selector = v.astype(int)
-            #self._canvas_hidden[y, x] = color
             cv2.circle(self._canvas_hidden, (int(x), int(y)), math.ceil(thickness/2.0), color)
 
     def draw_line_2d(self, start, end, color, thickness=1):
@@ -228,15 +232,22 @@ class Camera(object):
         Draw a line on the canvas
         '''
         with self._canvas_lock:
-            cv2.line(self._canvas_hidden, start, end, color, thickness, cv2.LINE_AA)
+            rect = (0, 0, self._canvas_width, self._canvas_height)
+            inside, sp, ep = cv2.clipLine(rect, start, end)
+            if inside:
+                cv2.line(self._canvas_hidden, sp, ep, color, thickness, cv2.LINE_AA)
 
-    def render(self, v, color):
+
+    def render(self, v, color, texture=None):
         with self._canvas_lock:
             selector = v.astype(int)
-            y, x = selector[:, 0:2].T
-            xy_filter = (((y >= 0) & (y < self._canvas_height)) & \
-                         ((x >= 0) & (x < self._canvas_width)))
-            self._canvas_hidden[y[xy_filter], x[xy_filter]] = color
+            x, y = selector[:, 0:2].T
+            xy_filter = (((y > 0) & (y < self._canvas_height)) & \
+                         ((x > 0) & (x < self._canvas_width)))
+            if texture is not None:
+                self._canvas_hidden[y[xy_filter], x[xy_filter]] = texture[xy_filter]
+            else:
+                self._canvas_hidden[y[xy_filter], x[xy_filter]] = color
 
     def clean_canvas(self):
         self._canvas_hidden = np.zeros((self._canvas_height, self._canvas_width, 3))
@@ -405,8 +416,8 @@ class Scene(Thread):
         with self._obj_lock:
             self._objects.append(line)
 
-    def draw_vertices(self, verts, color=(0xFF, 0xFF, 0xFF)):
-        verts = Vertices(verts, color)
+    def draw_vertices(self, verts, color=(0xFF, 0xFF, 0xFF), texture=None):
+        verts = Vertices(verts, color, texture)
         verts.bind(self)
         with self._obj_lock:
             self._objects.append(verts)
