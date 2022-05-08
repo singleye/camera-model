@@ -16,6 +16,9 @@ class Object3D(object):
         '''
         self._scene = scene
 
+    def unbind(self):
+        self._scene = None
+
     def refresh(self, camera):
         '''
         Refresh the object in the view of camera
@@ -38,6 +41,21 @@ class Point(Object3D):
         v_c = camera.trans_to_cam(np.array([[self._x, self._y, self._z]]))
         proj_v = camera.project(v_c)
         camera.draw_point_2d(round(proj_v[0][0]), round(proj_v[0][1]), self._color, self._thickness)
+
+class Vertices(Object3D):
+    '''
+    3D space vertices
+    '''
+
+    def __init__(self, v, color=(0xFF, 0xFF, 0xFF)):
+        super().__init__()
+        self._verts = v
+        self._color = color
+
+    def refresh(self, camera):
+        v_c = camera.trans_to_cam(self._verts)
+        proj_v = camera.project(v_c)
+        camera.render(proj_v, self._color)
 
 
 class Line(Object3D):
@@ -191,13 +209,8 @@ class Camera(object):
                 u = width - f*(Y/X)
                 v = height - f*(Z/X)
         '''
-        #proj_v = [self._canvas_width, self._canvas_height] - self._f*v[:, 1:]/v[:, 0, np.newaxis]
-        #proj_v = np.flip(proj_v, axis=1)
-
         Z = np.expand_dims(v[:, -1], axis=1)
-        #proj_v = (self._f / Z) * np.dot(self.intrinsic, v.T)
-        proj_v = np.dot(self.intrinsic, v.T) / Z
-        proj_v = proj_v.T
+        proj_v = np.transpose(np.dot(self.intrinsic, v.T)) / Z
         proj_v[:, 0:2] = [self._canvas_width, self._canvas_height] - proj_v[:, 0:2]
         return proj_v[:, :2]
 
@@ -220,7 +233,10 @@ class Camera(object):
     def render(self, v, color):
         with self._canvas_lock:
             selector = v.astype(int)
-            self._canvas_hidden[selector[:, 0], selector[:, 1]] = color
+            y, x = selector[:, 0:2].T
+            xy_filter = (((y >= 0) & (y < self._canvas_height)) & \
+                         ((x >= 0) & (x < self._canvas_width)))
+            self._canvas_hidden[y[xy_filter], x[xy_filter]] = color
 
     def clean_canvas(self):
         self._canvas_hidden = np.zeros((self._canvas_height, self._canvas_width, 3))
@@ -335,6 +351,7 @@ class Scene(Thread):
         self._name = name
         self._cam = None
         self._objects = []
+        self._obj_lock = Lock()
         self._running = True
 
     def _refresh(self):
@@ -342,8 +359,9 @@ class Scene(Thread):
         Refresh the objects onto the canvas
         '''
         self._cam.clean_canvas()
-        for obj in self._objects:
-            obj.refresh(self._cam)
+        with self._obj_lock:
+            for obj in self._objects:
+                obj.refresh(self._cam)
         self._cam.flush_canvas()
 
     def run(self):
@@ -373,7 +391,8 @@ class Scene(Thread):
         '''
         pt = Point(x, y, z, color, thickness)
         pt.bind(self)
-        self._objects.append(pt)
+        with self._obj_lock:
+            self._objects.append(pt)
 
     def draw_line_3d(self, start, end, color=(0xFF, 0xFF, 0xFF), thickness=1):
         '''
@@ -383,7 +402,20 @@ class Scene(Thread):
         '''
         line = Line(start, end, color, thickness)
         line.bind(self)
-        self._objects.append(line)
+        with self._obj_lock:
+            self._objects.append(line)
+
+    def draw_vertices(self, verts, color=(0xFF, 0xFF, 0xFF)):
+        verts = Vertices(verts, color)
+        verts.bind(self)
+        with self._obj_lock:
+            self._objects.append(verts)
+
+    def clear(self):
+        with self._obj_lock:
+            for obj in self._objects:
+                obj.unbind()
+            self._objects = []
 
 
 def test():
