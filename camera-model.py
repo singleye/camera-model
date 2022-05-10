@@ -106,12 +106,15 @@ class Canvas(object):
         pass
 
 
-class Camera(object):
+class Camera(Thread):
     def __init__(self, width, height, fps=30):
+        Thread.__init__(self)
         # camera position in world frame
         self._x, self._y, self._z = 0, 0, 0
         self._pos = np.array([self._x, self._y, self._z])
         self._fps = fps
+
+        self._scene = None
 
         # camera rotation
         self._roll, self._pitch, self._yaw = 0, 0, 0
@@ -119,12 +122,11 @@ class Camera(object):
                            [0, 1, 0],
                            [0, 0, 1]])
 
-        self._distance = 0
-
         self._canvas_width, self._canvas_height = width,height
         self._canvas_shown = np.zeros((height, width, 3))
         self._canvas_hidden = np.zeros((height, width, 3))
         self._canvas_lock = Lock()
+        self._canvas_swap_lock = Lock()
 
         # camera focus length in meter
         self._f = 1
@@ -136,6 +138,36 @@ class Camera(object):
         self.intrinsic = np.array([[self._f*self._s,    0,                  self._canvas_width/2.0],
                                    [0,                  self._f*self._s,    self._canvas_height/2.0],
                                    [0,                  0,                  1]])
+
+        self._running = True
+
+    def set_scene(self, scene):
+        self._scene = scene
+
+    def stop(self):
+        self._running = False
+        self.join()
+
+    def run(self):
+        while self._running:
+            if not self._scene:
+                time.sleep(0.1)
+                continue
+
+            objects = self._scene.get_objects()
+            if len(objects) == 0:
+                continue
+
+            self.clean_canvas()
+            for obj in objects:
+                self.view(obj)
+            self.flush_canvas()
+
+    def view(self, obj):
+        '''
+        View the object on the hidden canvas
+        '''
+        obj.refresh(self)
 
     @property
     def roll(self):
@@ -165,14 +197,6 @@ class Camera(object):
         self.rotate(self._roll, self._pitch, self._yaw)
 
     @property
-    def distance(self):
-        return self._distance
-
-    @distance.setter
-    def distance(self, value):
-        self._distance = value
-
-    @property
     def focus(self):
         return self._f
 
@@ -186,15 +210,15 @@ class Camera(object):
         '''
         Move camera to new position
         '''
-        self._x, self._y, self._z = x, y, z
+        self._x, self._y, self._z = float(x), float(y), float(z)
 
     def rotate(self, roll, pitch, yaw):
         '''
-        Rotate camera by roll, pitch, yaw
+        Rotate camera by roll, pitch, yaw, then world coordinate rotate by -roll, -pitch, -yaw
         '''
-        rx, _ = cv2.Rodrigues((pitch, 0, 0))
-        ry, _ = cv2.Rodrigues((0, yaw, 0))
-        rz, _ = cv2.Rodrigues((0, 0, roll))
+        rx, _ = cv2.Rodrigues((-pitch, 0, 0))
+        ry, _ = cv2.Rodrigues((0, -yaw, 0))
+        rz, _ = cv2.Rodrigues((0, 0, -roll))
         self.R = np.dot(rz, np.dot(ry, rx))
 
     def trans_to_cam(self, v):
@@ -216,9 +240,9 @@ class Camera(object):
         Z = np.expand_dims(v[:, -1], axis=1)
         with np.errstate(divide='ignore', invalid='ignore'):
             proj_v = np.transpose(np.dot(self.intrinsic, v.T)) / Z
+        proj_v[v[:, 2]< 0.03] = np.nan
         proj_v[:, 0:2] = [self._canvas_width, self._canvas_height] - proj_v[:, 0:2]
-        #proj_v[v[:, 2]< 0.03] = np.nan
-        return proj_v[:, :2]
+        return proj_v[:, 0:2]
 
     def draw_point_2d(self, x, y, color=(0xFF, 0xFF, 0xFF), thickness=1):
         '''
@@ -237,7 +261,6 @@ class Camera(object):
             if inside:
                 cv2.line(self._canvas_hidden, sp, ep, color, thickness, cv2.LINE_AA)
 
-
     def render(self, v, color, texture=None):
         with self._canvas_lock:
             selector = v.astype(int)
@@ -250,7 +273,8 @@ class Camera(object):
                 self._canvas_hidden[y[xy_filter], x[xy_filter]] = color
 
     def clean_canvas(self):
-        self._canvas_hidden = np.zeros((self._canvas_height, self._canvas_width, 3))
+        with self._canvas_lock:
+            self._canvas_hidden = np.zeros((self._canvas_height, self._canvas_width, 3))
 
     def flush_canvas(self):
         with self._canvas_lock:
@@ -356,45 +380,73 @@ class Camera(object):
             fps = 1.0/(time.time() - frame_start)
 
 
-class Scene(Thread):
-    def __init__(self, name):
-        Thread.__init__(self)
-        self._name = name
-        self._cam = None
+class Frame(object):
+    def __init__(self):
         self._objects = []
         self._obj_lock = Lock()
-        self._running = True
 
-    def _refresh(self):
-        '''
-        Refresh the objects onto the canvas
-        '''
-        self._cam.clean_canvas()
+    def add(self, obj):
         with self._obj_lock:
-            for obj in self._objects:
-                obj.refresh(self._cam)
-        self._cam.flush_canvas()
+            self.add_object.append(obj)
 
-    def run(self):
-        while self._running:
-            self._refresh()
+    def clear(self):
+        with self._obj_lock:
+            self._objects = []
 
-    def set_camera(self, camera):
+
+class Scene(object):
+    def __init__(self, name):
+        #Thread.__init__(self)
+        self._name = name
+        self._cam = None
+        self._obj_lock = Lock()
+        self._objects = []
+        self._active_objects = []
+        self._drawing_objects = []
+        #self._running = True
+        self._need_flush = False
+
+    def get_objects(self):
+        with self._obj_lock:
+            return self._active_objects
+
+    #def _refresh(self):
+    #    '''
+    #    Refresh the objects onto the canvas
+    #    '''
+    #    if not self._need_flush:
+    #        return
+
+    #    self._cam.clean_canvas()
+    #    with self._obj_lock:
+    #        for obj in self._active_objects:
+    #            obj.refresh(self._cam)
+    #    self._cam.flush_canvas()
+
+    #def run(self):
+    #    while self._running:
+    #        self._refresh()
+
+    def set_camera(self, camera, x=0, y=0, z=0):
         '''
         Set the viewing camera
         '''
         self._cam = camera
+        self._cam.set_scene(self)
+        self._cam.move(x, y, z)
 
     def show(self):
-        # start thread
-        self.start()
+        ## start thread
+        #self.start()
 
         # start rendering
+        self._cam.start()
         self._cam.play(self._name)
+        self._cam.stop()
 
         # TODO: quit logic
-        self._running = False
-        self.join()
+        #self._running = False
+        #self.join()
 
     def draw_point_3d(self, x, y, z, color=(0xFF, 0xFF, 0xFF), thickness=1):
         '''
@@ -403,7 +455,7 @@ class Scene(Thread):
         pt = Point(x, y, z, color, thickness)
         pt.bind(self)
         with self._obj_lock:
-            self._objects.append(pt)
+            self._drawing_objects.append(pt)
 
     def draw_line_3d(self, start, end, color=(0xFF, 0xFF, 0xFF), thickness=1):
         '''
@@ -414,26 +466,42 @@ class Scene(Thread):
         line = Line(start, end, color, thickness)
         line.bind(self)
         with self._obj_lock:
-            self._objects.append(line)
+            self._drawing_objects.append(line)
 
     def draw_vertices(self, verts, color=(0xFF, 0xFF, 0xFF), texture=None):
         verts = Vertices(verts, color, texture)
         verts.bind(self)
         with self._obj_lock:
-            self._objects.append(verts)
+            self._drawing_objects.append(verts)
 
     def clear(self):
+        '''
+        Clear the active frame
+        '''
         with self._obj_lock:
-            for obj in self._objects:
+            for obj in self._active_objects:
                 obj.unbind()
-            self._objects = []
+            self._active_objects = []
+            for obj in self._drawing_objects:
+                obj.unbind()
+            self._drawing_objects = []
+
+    def flush(self):
+        '''
+        Flush the drawing frame to the active frame
+        '''
+        with self._obj_lock:
+            for obj in self._active_objects:
+                obj.unbind()
+            self._active_objects = self._drawing_objects
+            self._drawing_objects = []
 
 
 def test():
     scene = Scene('Hello world!')
     cam = Camera(800, 640)
-    cam.move(0, 0, -10)
-    scene.set_camera(cam)
+    #cam.move(0, 0, -10)
+    scene.set_camera(cam, 0, 0, -10)
 
     # add origin axis marker
     scene.draw_line_3d((0, 0, 0), (1, 0, 0), color=(0x00, 0x00, 0xFF), thickness=1)
@@ -458,6 +526,7 @@ def test():
     # add a point
     scene.draw_point_3d(0.1, -0.1, 1, color=(0x00, 0xFF, 0x00))
     scene.draw_point_3d(0, 0, 0, color=(0x00, 0xFF, 0x00))
+    scene.flush()
 
     scene.show()
 
