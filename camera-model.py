@@ -206,6 +206,16 @@ class Camera(Thread):
         self.intrinsic[0][0] = self._f * self._s
         self.intrinsic[1][1] = self._f * self._s
 
+    @property
+    def scale(self):
+        return self._s
+
+    @scale.setter
+    def scale(self, value):
+        self._s = value
+        self.intrinsic[0][0] = self._f * self._s
+        self.intrinsic[1][1] = self._f * self._s
+
     def move(self, x, y, z):
         '''
         Move camera to new position
@@ -319,6 +329,12 @@ class Camera(Thread):
                                 (self._canvas_width-w_offset, h_offset),
                                 cv2.FONT_HERSHEY_SIMPLEX, font_size,
                                 (0xA0, 0xA0, 0xA0), font_thickness, cv2.LINE_AA)
+                    h_offset += 10
+                    cv2.putText(self._canvas_shown,
+                                '  Scale: %d' % (self.scale),
+                                (self._canvas_width-w_offset, h_offset),
+                                cv2.FONT_HERSHEY_SIMPLEX, font_size,
+                                (0xA0, 0xA0, 0xA0), font_thickness, cv2.LINE_AA)
                 cv2.imshow(name, self._canvas_shown)
 
             if show_fps:
@@ -354,10 +370,15 @@ class Camera(Thread):
             elif key == ord('-'):
                 new_f = self.focus - 0.1
                 self.focus = max(new_f, 0.1)
-            # '+'
+            # ']'
             elif key == ord('='):
                 new_f = self.focus + 0.1
                 self.focus = min(new_f, 2000)
+            elif key == ord(']'):
+                self.scale += 10
+            # '['
+            elif key == ord('['):
+                self.scale -= 10
             elif key == ord('q'):
                 self._z -= 0.1
             elif key == ord('e'):
